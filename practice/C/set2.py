@@ -49,7 +49,31 @@ def time_reverse_signal(x : np.ndarray) -> np.ndarray:
     y = x[::-1]
     
     return y
+def time_reverse_signal_general(
+        x: np.ndarray, 
+        n_start: int, 
+        n_end: int
+    ) -> Tuple[np.ndarray, int, int]:
+    """
+    Generic time reversal: returns x[-n] for an arbitrary range [n_start, n_end].
+    Unlike time_reverse_signal(), this handles asymmetric ranges correctly.
+    
+    The reversed signal lives on [-n_end, -n_start] — NOT the original range.
+    Returns (y, out_start, out_end) so the caller knows the new index origin.
+    
+    Example: signal on [1, 4]  →  reversed signal on [-4, -1]
+    """
+    out_start = -n_end
+    out_end   = -n_start
+    y = np.zeros(out_end - out_start + 1)
 
+    n_input        = np.arange(n_start, n_end + 1)
+    input_indices  = n_input - n_start          # positions in x
+    output_indices = -n_input - out_start       # positions in y  (= n_end - n_input)
+
+    y[output_indices] = x[input_indices]
+
+    return y, out_start, out_end
 
 def odd_even_decomposition(x : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -67,23 +91,7 @@ def odd_even_decomposition(x : np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     
     return odd_signal, even_signal
 
-def time_reverse_signal_general(x: np.ndarray, n_start: int, n_end: int) -> np.ndarray:
-    y = np.zeros_like(x)  # Start with all zeros (assume 0 outside range)
-    
-    n_input = np.arange(n_start, n_end + 1)
-    n_output = -n_input
-    
-    # Create a mask: only keep indices where output time is within [n_start, n_end]
-    valid_range = (n_output >= n_start) & (n_output <= n_end)
-    
-    # Get the indices that are valid
-    input_indices = n_input[valid_range] - n_start
-    output_indices = n_output[valid_range] - n_start
-    
-    # Assign only the valid values
-    y[output_indices] = x[input_indices]
-    
-    return y
+
 
 
     
