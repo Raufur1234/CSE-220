@@ -153,3 +153,40 @@ if __name__ == "__main__":
     in_range = (n_in >= -INF) & (n_in <= INF)
     y[n_out[valid][in_range] + INF] = x[n_in[in_range] + INF]
     return y
+    
+    
+    from fractions import Fraction
+import numpy as np
+
+INF = 8
+
+def time_scale_general(x: np.ndarray, k=1, b: int = 0) -> np.ndarray:
+    """
+    y[n] = x[k*n + b]
+
+    k: int, float, or Fraction
+       - k=3        -> compress by 3
+       - k=1/3       -> expand by 3
+       - k=1 (default) -> no scaling
+       - negative k  -> also reverses
+    b: integer sample shift, positive or negative, default 0
+
+    time_scale_general(x)        -> x[n]        (identity)
+    time_scale_general(x, k)     -> x[k*n]       (scale only)
+    time_scale_general(x, b=b)   -> x[n+b]       (shift only)
+    time_scale_general(x, k, b)  -> x[k*n+b]     (scale then shift)
+    """
+    frac = Fraction(k).limit_denominator(1000)
+    p, q = frac.numerator, frac.denominator
+
+    y = np.zeros_like(x)
+    n_out = np.arange(-INF, INF + 1)
+
+    numer = p * n_out
+    valid = (numer % q == 0)
+    n_in = numer[valid] // q + b
+
+    in_range = (n_in >= -INF) & (n_in <= INF)
+    y[n_out[valid][in_range] + INF] = x[n_in[in_range] + INF]
+    return y
+
