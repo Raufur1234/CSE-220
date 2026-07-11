@@ -190,3 +190,64 @@ def time_scale_general(x: np.ndarray, k=1, b: int = 0) -> np.ndarray:
     y[n_out[valid][in_range] + INF] = x[n_in[in_range] + INF]
     return y
 
+def time_scale_general(x: np.ndarray, k=1, b: int = 0, interpolate: bool = False) -> np.ndarray:
+    """
+    y[n] = x[k*n + b]
+
+    interpolate: if False (default), non-integer source positions are 0.
+    If True, filled via proper linear interpolation (weighted by distance,
+    not naive averaging). Only matters for expansion (|k|<1); compression
+    and integer k are unaffected either way, since every output already
+    lands on an exact input index.
+    """
+    y_dtype = float if interpolate else x.dtype
+    y = np.zeros_like(x, dtype=y_dtype)
+    n_out = np.arange(-INF, INF + 1)
+
+    if not interpolate:
+        frac = Fraction(k).limit_denominator(1000)
+        p, q = frac.numerator, frac.denominator
+        numer = p * n_out
+        valid = (numer % q == 0)
+        n_in = numer[valid] // q + b
+        in_range = (n_in >= -INF) & (n_in <= INF)
+        y[n_out[valid][in_range] + INF] = x[n_in[in_range] + INF]
+        return y
+
+    k_float = float(k)                     # crucial fix, see below
+    n_in_real = k_float * n_out + b
+    floor_idx = np.floor(n_in_real).astype(int)
+    ceil_idx = np.ceil(n_in_real).astype(int)
+    frac_part = n_in_real - floor_idx
+    in_range = (floor_idx >= -INF) & (ceil_idx <= INF)
+
+    fl = floor_idx[in_range] + INF
+    ce = ceil_idx[in_range] + INF
+    w = frac_part[in_range]
+
+    y[n_out[in_range] + INF] = (1 - w) * x[fl] + w * x[ce]
+    return y
+
+def time_scale_general_avg_interp(x: np.ndarray, k=1, b: int = 0) -> np.ndarray:
+    """
+    y[n] = (x[floor(k*n+b)] + x[ceil(k*n+b)]) / 2
+
+    Flat-average interpolation, matching the style of the original
+    time_scale_signal_interpolate reference, generalized to any k and
+    an integer shift b.
+    """
+    y = np.zeros_like(x, dtype=float)
+    n_out = np.arange(-INF, INF + 1)
+
+    k_float = float(k)
+    n_in_real = k_float * n_out + b
+    floor_idx = np.floor(n_in_real).astype(int)
+    ceil_idx = np.ceil(n_in_real).astype(int)
+
+    in_range = (floor_idx >= -INF) & (ceil_idx <= INF)
+    fl = floor_idx[in_range] + INF
+    ce = ceil_idx[in_range] + INF
+
+    y[n_out[in_range] + INF] = (x[fl] + x[ce]) / 2
+    return y
+
