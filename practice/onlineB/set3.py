@@ -128,3 +128,28 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+    
+    
+    def time_scale_general(x: np.ndarray, k) -> np.ndarray:
+    """
+    y[n] = x[k*n]
+    k can be any positive/negative rational (int, float, or Fraction):
+      k = 3      -> compression by 3   (like your original time_compress)
+      k = 1/3    -> expansion by 3     (like your original time_scale_signal)
+      k = 1      -> identity
+      k = -1     -> time reversal
+    """
+    frac = Fraction(k).limit_denominator(1000)
+    p, q = frac.numerator, frac.denominator
+
+    y = np.zeros_like(x)
+    n_out = np.arange(-INF, INF + 1)
+
+    numer = p * n_out
+    valid = (numer % q == 0)
+    n_in = numer[valid] // q
+
+    in_range = (n_in >= -INF) & (n_in <= INF)
+    y[n_out[valid][in_range] + INF] = x[n_in[in_range] + INF]
+    return y
