@@ -4,14 +4,14 @@ public class Dalchal {
     public static void main(String[] args) {
         channel smsChannel=new SMS();
         channel emailChannel=new email();
+        
         notification Notification1=new PaymentFailed(smsChannel);
-
         notification Notification2=new PaymentFailed(emailChannel);
         notification Notification3=new bazarconfirmed(emailChannel);
 
         Notification1.send("Hello world");
-         Notification2.send("Hello world");
-          Notification3.send("Hello world");
+        Notification2.send("Hello world");
+        Notification3.send("Hello world");
 
     }  
 }
