@@ -1,4 +1,4 @@
-import static java.lang.System.out;
+zx`135y import static java.lang.System.out;
 
 public class bridge2 {
     public static void main(String[] args) {
