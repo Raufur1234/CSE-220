@@ -24,7 +24,8 @@ import numpy as np
 
 from bench_utils import plot_runtime_curve, time_best, timing_table_lines
 from io_utils import random_decimal, read_operands, write_report, write_text
-from transforms import ArbitraryLengthFFT, DFTAnalyzer, FFTTransformer, next_power_of_two
+from transforms import (ArbitraryLengthFFT, DFTAnalyzer, FFTTransformer, NTT_PRIME,
+                        NTT_ROOT, NTTTransformer, next_power_of_two)
 
 # Python 3.11+ refuses to print integers longer than 4300 digits unless this
 # limit is raised, and the verification step below prints one.
@@ -100,7 +101,7 @@ def from_limbs(sign, limbs, base_digits=BASE_DIGITS):
         i +=1
 
     carry=str(carry)
-    carry_sign,new_limbs=to_limbs(carry)
+    carry_sign,new_limbs=to_limbs(carry, base_digits)
 
     final_limbs=np.append(limbs,new_limbs)
 
@@ -120,6 +121,33 @@ def from_limbs(sign, limbs, base_digits=BASE_DIGITS):
         number = '-'+number
 
     return number
+
+
+def base_digits_for(method, text_a, text_b):
+    """
+    Decimal digits per limb for ``method``.
+
+    The floating-point engines are bounded by the double mantissa, and the
+    specification shows 10^4 is safe there. The NTT is bounded by its modulus
+    instead, and p = 998244353 is far below 2^53, so the base has to come
+    down. A coefficient is a sum of at most min(n, q) products of two limbs,
+    so the base must satisfy
+
+        min(n, q) * (10^d - 1)^2  <  NTT_PRIME,
+
+    where n and q are the limb counts that d itself produces. Take the
+    largest d that holds -- for the 20000-digit inputs/4.txt that is 2, which
+    leaves the coefficients around 9.8e7 against a modulus of 9.98e8.
+    """
+    if method != "ntt":
+        return BASE_DIGITS
+    na = len(text_a.lstrip("+-"))
+    nb = len(text_b.lstrip("+-"))
+    for d in range(BASE_DIGITS, 0, -1):
+        terms = min(-(-na // d), -(-nb // d))
+        if terms * (10 ** d - 1) ** 2 < NTT_PRIME:
+            return d
+    raise ValueError("operands too long for the NTT modulus %d" % NTT_PRIME)
 
 
 def multiply_transform(a, b, engine):
@@ -195,8 +223,9 @@ def multiply(text_a, text_b, method):
     ``method`` is one of "dft", "fft", "schoolbook" (optional) or "arbitrary"
     (bonus). Pick the engine, convert to limbs, convolve, carry, re-sign.
     """
-    sign_a, limbs_a = to_limbs(text_a)
-    sign_b, limbs_b = to_limbs(text_b)
+    base_digits = base_digits_for(method, text_a, text_b)
+    sign_a, limbs_a = to_limbs(text_a, base_digits)
+    sign_b, limbs_b = to_limbs(text_b, base_digits)
 
     if method == "dft":
         coeffs, _ = multiply_transform(limbs_a, limbs_b, DFTAnalyzer())
@@ -204,12 +233,14 @@ def multiply(text_a, text_b, method):
         coeffs, _ = multiply_transform(limbs_a, limbs_b, FFTTransformer())
     elif method == "arbitrary":
         coeffs, _ = multiply_transform(limbs_a, limbs_b, ArbitraryLengthFFT())
+    elif method == "ntt":
+        coeffs, _ = multiply_transform(limbs_a, limbs_b, NTTTransformer())
     elif method == "schoolbook":
         coeffs = multiply_schoolbook(limbs_a, limbs_b)
     else:
         raise ValueError("unknown method: %r" % method)
 
-    product = from_limbs(sign_a * sign_b, coeffs)
+    product = from_limbs(sign_a * sign_b, coeffs, base_digits)
     return product, len(coeffs), limbs_a, limbs_b
 
 
@@ -230,6 +261,7 @@ def run_single(path, method, out_dir):
     MISMATCH; a MISMATCH must not be silently swallowed.
     """
     text_a, text_b = read_operands(path)
+    base_digits = base_digits_for(method, text_a, text_b)
     product, N, limbs_a, limbs_b = multiply(text_a, text_b, method)
 
     write_text(os.path.join(out_dir, "product.txt"), product)
@@ -243,21 +275,39 @@ def run_single(path, method, out_dir):
     def field(label, value):
         return "%-20s: %s" % (label, value)
 
+    # The NTT is exact by construction, so the interesting comparison is
+    # against the engine that is not: the specification asks for it directly.
+    extra = []
+    if method == "ntt":
+        float_product, _, _, _ = multiply(text_a, text_b, "fft")
+        agree = "MATCH" if product == float_product else "MISMATCH"
+        extra = [
+            field("modulus p", "%d = 119 * 2^23 + 1" % NTT_PRIME),
+            field("primitive root g", NTT_ROOT),
+            field("coefficient bound", "min(n,q)*(10^%d-1)^2 = %d  <  p"
+                  % (base_digits,
+                     min(len(limbs_a), len(limbs_b)) * (10 ** base_digits - 1) ** 2)),
+            field("vs floating-point FFT", agree),
+        ]
+
     write_report(os.path.join(out_dir, "report.txt"), [
         "Task A -- big-integer multiplication by spectral convolution",
         field("input file", path),
         field("method", method),
         field("digits of A / B", "%d / %d" % (digit_count(text_a), digit_count(text_b))),
-        field("base", "10^%d" % BASE_DIGITS),
+        field("base", "10^%d" % base_digits),
         field("limbs of A / B", "%d / %d" % (len(limbs_a), len(limbs_b))),
         field("transform length N", N),
         field("digits of product", digit_count(product)),
+    ] + extra + [
         field("verification", verdict),
     ])
 
     print(verdict)
     if verdict == "MISMATCH":
         raise AssertionError("multiply(%s) mismatch for %s" % (method, path))
+    if any(line.endswith("MISMATCH") for line in extra):
+        raise AssertionError("NTT and floating-point FFT disagree for %s" % path)
 
     return product
 
@@ -321,7 +371,7 @@ def main():
     ap = argparse.ArgumentParser(description="Big-integer multiplication by DFT/FFT")
     ap.add_argument("input", nargs="?", help="input file with the two operands")
     ap.add_argument("--engine", default="fft",
-                    choices=["dft", "fft", "schoolbook", "arbitrary"])
+                    choices=["dft", "fft", "schoolbook", "arbitrary", "ntt"])
     ap.add_argument("--out-dir", default="outputs")
     ap.add_argument("--benchmark", action="store_true",
                     help="run the timing study instead of a single multiplication")

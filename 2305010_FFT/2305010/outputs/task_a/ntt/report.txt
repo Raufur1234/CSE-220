@@ -1,0 +1,13 @@
+Task A -- big-integer multiplication by spectral convolution
+input file          : inputs/4.txt
+method              : ntt
+digits of A / B     : 20000 / 20000
+base                : 10^2
+limbs of A / B      : 10000 / 10000
+transform length N  : 32768
+digits of product   : 40000
+modulus p           : 998244353 = 119 * 2^23 + 1
+primitive root g    : 3
+coefficient bound   : min(n,q)*(10^2-1)^2 = 98010000  <  p
+vs floating-point FFT: MATCH
+verification        : MATCH

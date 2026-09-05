@@ -29,6 +29,22 @@ def next_power_of_two(n):
     return 1 << (n - 1).bit_length()
 
 
+def bit_reverse(x):
+    """
+    Permute ``x`` into bit-reversed index order -- the input ordering a
+    decimation-in-time radix-2 transform needs. Shared by FFTTransformer and
+    NTTTransformer: the permutation is the same whether the butterflies that
+    follow run in the complex numbers or in Z_p.
+    """
+    N = len(x)
+    width = N.bit_length() - 1
+    idx = np.arange(N)
+    rev = np.zeros(N, dtype=np.intp)
+    for b in range(width):
+        rev |= ((idx >> b) & 1) << (width - 1 - b)
+    return x[rev]
+
+
 
 
 
@@ -112,15 +128,7 @@ class FFTTransformer(DFTAnalyzer):
         N=len(x)
         if(N!=next_power_of_two(N)):
             raise ValueError
-        x=np.array(x,dtype=np.complex128)
-        width = N.bit_length()-1
-
-        
-        idx = np.arange(N)
-        rev = np.zeros(N, dtype=np.intp)
-        for b in range(width):
-            rev |= ((idx >> b) & 1) << (width - 1 - b)
-        x_bit_rev = x[rev]
+        x_bit_rev = bit_reverse(np.array(x, dtype=np.complex128))
 
         for s in range(1,int(np.log2(N)+1)):
             M= 2**s
@@ -198,3 +206,86 @@ class ArbitraryLengthFFT(FFTTransformer):
         if N <= 1:
             return spectrum.copy()
         return np.conj(self.transform(np.conj(spectrum))) / N
+
+
+# ---------------------------------------------------------------------------
+# BONUS 2 (optional) -- exact multiplication with the Number Theoretic
+# Transform.
+# ---------------------------------------------------------------------------
+NTT_PRIME = 998244353          # 119 * 2**23 + 1
+NTT_ROOT = 3                   # a primitive root modulo NTT_PRIME
+NTT_MAX_LENGTH = 1 << 23       # 2**23 divides NTT_PRIME - 1
+
+
+class NTTTransformer:
+    """
+    The radix-2 decimation-in-time transform again, but carried out in the
+    finite field Z_p instead of the complex numbers.
+
+    The FFT never needs e^{-2j*pi/N} as a *number*; it only needs an element
+    of order N -- one satisfying w^N = 1 and w^(N/2) = -1, which is what makes
+    a butterfly a butterfly. Modulo a prime p = c * 2^k + 1 such an element
+    exists for every power of two N <= 2^k: take w = g^((p-1)/N), where g is a
+    primitive root. Here p = 119 * 2^23 + 1 and g = 3, so N may go up to 2^23.
+
+    Every intermediate value is an integer below p, so nothing is rounded and
+    nothing drifts: the convolution comes out exactly right rather than right
+    to within half an ulp. The mantissa argument in the specification simply
+    does not apply.
+
+    The bound does not disappear, though -- it moves. Where the float FFT
+    needs n*(B-1)^2 < 2^53, the NTT needs n*(B-1)^2 < p, and p is far smaller
+    than 2^53. So the base has to come down; bigmul.base_digits_for picks it.
+    """
+
+    name = "ntt"
+
+    def _butterflies(self, x, root):
+        """
+        Both directions, one set of butterflies: ``root`` is g going forward
+        and g^-1 coming back (the finite-field equivalent of conjugating the
+        twiddles).
+        """
+        p = NTT_PRIME
+        N = len(x)
+        if N != next_power_of_two(N):
+            raise ValueError("NTT length must be a power of two, got %d" % N)
+        if N > NTT_MAX_LENGTH:
+            raise ValueError("NTT length %d exceeds 2**23 for p = %d" % (N, p))
+
+        x = bit_reverse(np.asarray(x, dtype=np.int64) % p)
+
+        for s in range(1, N.bit_length()):
+            M = 1 << s
+            half = M // 2
+            # twiddles for this stage, computed once for the whole stage
+            w = pow(root, (p - 1) // M, p)
+            W = np.empty(half, dtype=np.int64)
+            acc = 1
+            for j in range(half):
+                W[j] = acc
+                acc = acc * w % p
+
+            blocks = x.reshape(-1, M)
+            g = blocks[:, :half]
+            h = W * blocks[:, half:] % p
+            top, bottom = (g + h) % p, (g - h) % p
+            blocks[:, :half] = top
+            blocks[:, half:] = bottom
+
+        return x
+
+    def transform(self, x):
+        """Forward NTT. Returns residues mod NTT_PRIME, dtype int64."""
+        return self._butterflies(x, NTT_ROOT)
+
+    def inverse(self, spectrum):
+        """
+        Inverse NTT, including the 1/N factor -- which here is the modular
+        inverse of N, not a division. Fermat gives both inverses: for p prime
+        and a not divisible by p, a^(p-2) = a^-1 mod p.
+        """
+        p = NTT_PRIME
+        N = len(spectrum)
+        inv_root = pow(NTT_ROOT, p - 2, p)
+        return self._butterflies(spectrum, inv_root) * pow(N, p - 2, p) % p
