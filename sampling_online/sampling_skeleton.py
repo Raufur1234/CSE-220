@@ -132,3 +132,104 @@ def alias_frequency(frequency_hz: float, fs: float) -> float:
         raise ValueError("fs must be positive")
     wrapped = (abs(frequency_hz) + fs / 2.0) % fs - fs / 2.0
     return float(abs(wrapped))
+
+
+def magnitude_spectrum(
+    values: ArrayLike,
+    fs: float,
+    remove_mean: bool = False,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Return a one-sided amplitude spectrum for real, uniform samples."""
+    array = _as_1d_array(values)
+    if array.size == 0:
+        raise ValueError("values must not be empty")
+    if fs <= 0:
+        raise ValueError("fs must be positive")
+
+    working = array - np.mean(array) if remove_mean else array
+    spectrum = np.fft.rfft(working)
+    magnitude = np.abs(spectrum) * (2.0 / array.size)
+    magnitude[0] /= 2.0
+    if array.size % 2 == 0:
+        magnitude[-1] /= 2.0
+    frequencies = np.fft.rfftfreq(array.size, d=1.0 / fs)
+    return frequencies, magnitude
+
+
+def _validate_sample_pairs(
+    sample_times: ArrayLike,
+    sample_values: ArrayLike,
+) -> tuple[NDArray[np.float64], NDArray[Any]]:
+    """Validate paired one-dimensional sample times and values."""
+    times = _as_1d_array(sample_times, "sample_times").astype(float)
+    values = _as_1d_array(sample_values, "sample_values")
+    if times.size == 0:
+        raise ValueError("sample_times must not be empty")
+    if times.size != values.size:
+        raise ValueError("sample_times and sample_values must have equal length")
+    if np.any(np.diff(times) <= 0):
+        raise ValueError("sample_times must be strictly increasing")
+    return times, values
+
+
+def sinc_reconstruct(
+    sample_times: ArrayLike,
+    sample_values: ArrayLike,
+    output_times: ArrayLike,
+    sample_period: float | None = None,
+) -> NDArray[Any]:
+    """Reconstruct uniform samples using shifted normalized sinc functions."""
+    times, values = _validate_sample_pairs(sample_times, sample_values)
+    output = np.asarray(output_times, dtype=float)
+
+    if sample_period is None:
+        if times.size < 2:
+            raise ValueError(
+                "at least two sample times are needed to infer sample_period"
+            )
+        differences = np.diff(times)
+        sample_period = float(differences[0])
+        if not np.allclose(
+            differences,
+            sample_period,
+            rtol=1e-7,
+            atol=1e-12,
+        ):
+            raise ValueError("sample_times must be uniformly spaced")
+    elif sample_period <= 0:
+        raise ValueError("sample_period must be positive")
+
+    kernel = np.sinc((output[..., np.newaxis] - times) / sample_period)
+    return kernel @ values
+
+
+def zero_order_hold(
+    sample_times: ArrayLike,
+    sample_values: ArrayLike,
+    output_times: ArrayLike,
+    fill_value: float | complex = np.nan,
+) -> NDArray[Any]:
+    """Hold each sample over its left-closed interval until the next sample."""
+    times, values = _validate_sample_pairs(sample_times, sample_values)
+    output = np.asarray(output_times, dtype=float)
+    indices = np.searchsorted(times, output, side="right") - 1
+    valid = (output >= times[0]) & (output <= times[-1])
+    dtype = np.result_type(values.dtype, np.asarray(fill_value).dtype, float)
+    held = np.full(output.shape, fill_value, dtype=dtype)
+    held[valid] = values[indices[valid]]
+    return held
+
+
+def zoh_frequency_response(
+    frequencies_hz: ArrayLike,
+    sample_period: float,
+) -> NDArray[np.complex128]:
+    """Evaluate ``T exp(-j*pi*f*T) sinc(f*T)`` for a zero-order hold."""
+    if sample_period <= 0:
+        raise ValueError("sample_period must be positive")
+    frequencies = np.asarray(frequencies_hz, dtype=float)
+    return (
+        sample_period
+        * np.exp(-1j * np.pi * frequencies * sample_period)
+        * np.sinc(frequencies * sample_period)
+    )

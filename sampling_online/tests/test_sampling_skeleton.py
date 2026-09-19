@@ -82,3 +82,47 @@ def test_nyquist_helpers_distinguish_strict_boundary():
 )
 def test_alias_frequency_folds_into_nyquist_interval(frequency, fs, expected):
     assert ss.alias_frequency(frequency, fs) == pytest.approx(expected)
+
+
+def test_magnitude_spectrum_finds_bin_centered_tone():
+    fs = 32.0
+    t = ss.make_time_axis(0.0, 1.0, fs)
+    x = np.cos(2.0 * np.pi * 5.0 * t)
+    frequencies, magnitude = ss.magnitude_spectrum(x, fs)
+    assert frequencies[np.argmax(magnitude)] == pytest.approx(5.0)
+    assert np.max(magnitude) == pytest.approx(1.0)
+
+
+def test_sinc_reconstruction_is_exact_at_sample_times():
+    sample_times = np.arange(5, dtype=float) * 0.25
+    sample_values = np.array([1.0, -2.0, 0.5, 3.0, -1.0])
+    reconstructed = ss.sinc_reconstruct(
+        sample_times,
+        sample_values,
+        sample_times,
+    )
+    np.testing.assert_allclose(reconstructed, sample_values, atol=1e-12)
+
+
+def test_sinc_reconstruction_rejects_nonuniform_times():
+    with pytest.raises(ValueError, match="uniformly spaced"):
+        ss.sinc_reconstruct([0.0, 0.1, 0.25], [1.0, 2.0, 3.0], [0.1])
+
+
+def test_zero_order_hold_owns_left_closed_intervals_and_fills_outside():
+    result = ss.zero_order_hold(
+        [0.0, 1.0, 2.0],
+        [10.0, 20.0, 30.0],
+        [-0.1, 0.0, 0.9, 1.0, 1.9, 2.0, 2.1],
+        fill_value=-99.0,
+    )
+    np.testing.assert_allclose(
+        result,
+        [-99.0, 10.0, 10.0, 20.0, 20.0, 30.0, -99.0],
+    )
+
+
+def test_zoh_frequency_response_has_dc_gain_T_and_first_null():
+    response = ss.zoh_frequency_response([0.0, 4.0], sample_period=0.25)
+    assert response[0] == pytest.approx(0.25 + 0.0j)
+    assert abs(response[1]) == pytest.approx(0.0, abs=1e-12)
