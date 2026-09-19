@@ -126,3 +126,24 @@ def test_zoh_frequency_response_has_dc_gain_T_and_first_null():
     response = ss.zoh_frequency_response([0.0, 4.0], sample_period=0.25)
     assert response[0] == pytest.approx(0.25 + 0.0j)
     assert abs(response[1]) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_plot_signal_returns_objects_and_draws_line_or_stems():
+    fig_line, ax_line = ss.plot_signal([0, 1], [1, 2], label="x(t)")
+    fig_stem, ax_stem = ss.plot_signal([0, 1], [1, 2], discrete=True)
+    assert fig_line is ax_line.figure
+    assert len(ax_line.lines) == 1
+    assert fig_stem is ax_stem.figure
+    assert len(ax_stem.containers) >= 1
+
+
+def test_plot_sampling_overlays_reference_and_sample_stems():
+    fig, ax = ss.plot_sampling(
+        [0.0, 0.5, 1.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0],
+        [0.0, 0.0],
+    )
+    assert fig is ax.figure
+    assert len(ax.lines) >= 1
+    assert len(ax.containers) >= 1

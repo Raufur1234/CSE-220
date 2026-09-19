@@ -4,7 +4,27 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from numpy.typing import ArrayLike, NDArray
+
+__all__ = [
+    "alias_frequency",
+    "magnitude_spectrum",
+    "make_time_axis",
+    "meets_nyquist",
+    "nyquist_rate",
+    "plot_sampling",
+    "plot_signal",
+    "rectangular_pulse",
+    "sample_signal",
+    "sinc_reconstruct",
+    "unit_step",
+    "zero_order_hold",
+    "zero_pad",
+    "zoh_frequency_response",
+]
 
 
 def _as_1d_array(values: ArrayLike, name: str = "values") -> NDArray[Any]:
@@ -233,3 +253,78 @@ def zoh_frequency_response(
         * np.exp(-1j * np.pi * frequencies * sample_period)
         * np.sinc(frequencies * sample_period)
     )
+
+
+def plot_signal(
+    t: ArrayLike,
+    values: ArrayLike,
+    *,
+    ax: Axes | None = None,
+    discrete: bool = False,
+    label: str | None = None,
+    title: str | None = None,
+    xlabel: str = "Time (s)",
+    ylabel: str = "Amplitude",
+    grid: bool = True,
+    **style: Any,
+) -> tuple[Figure, Axes]:
+    """Plot a one-dimensional signal as a curve or a discrete stem plot."""
+    times = _as_1d_array(t, "t")
+    array = _as_1d_array(values)
+    if times.size != array.size:
+        raise ValueError("t and values must have equal length")
+
+    if ax is None:
+        figure, ax = plt.subplots()
+    else:
+        figure = ax.figure
+
+    if discrete:
+        ax.stem(times, array, label=label, **style)
+    else:
+        ax.plot(times, array, label=label, **style)
+    ax.set(xlabel=xlabel, ylabel=ylabel, title=title)
+    ax.grid(grid, alpha=0.3)
+    if label:
+        ax.legend()
+    return figure, ax
+
+
+def plot_sampling(
+    reference_times: ArrayLike,
+    reference_values: ArrayLike,
+    sample_times: ArrayLike,
+    sample_values: ArrayLike,
+    *,
+    ax: Axes | None = None,
+    title: str = "Continuous signal and samples",
+) -> tuple[Figure, Axes]:
+    """Overlay discrete samples on a dense reference curve."""
+    reference_time_array = _as_1d_array(reference_times, "reference_times")
+    reference_value_array = _as_1d_array(reference_values, "reference_values")
+    sample_time_array = _as_1d_array(sample_times, "sample_times")
+    sample_value_array = _as_1d_array(sample_values, "sample_values")
+    if reference_time_array.size != reference_value_array.size:
+        raise ValueError(
+            "reference_times and reference_values must have equal length"
+        )
+    if sample_time_array.size != sample_value_array.size:
+        raise ValueError("sample_times and sample_values must have equal length")
+
+    figure, ax = plot_signal(
+        reference_time_array,
+        reference_value_array,
+        ax=ax,
+        label="reference",
+        title=title,
+    )
+    ax.stem(
+        sample_time_array,
+        sample_value_array,
+        linefmt="C1-",
+        markerfmt="C1o",
+        basefmt="k-",
+        label="samples",
+    )
+    ax.legend()
+    return figure, ax
