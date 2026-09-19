@@ -28,6 +28,8 @@ Excluded: linear interpolation / first-order hold and the later DFT derivations.
 
 Sections 3 to 5 are the language reference: section 3 is plain Python (lists, tuples, dictionaries, sorting, comprehensions, files), section 4 is NumPy including `np.convolve` and `np.fft`, and section 5 is Matplotlib. Sections 6 onward are the sampling material itself. If you already know the language, skim the quick indexes at 4.15 and 5.9 and start at section 6.
 
+Section 15 lists every helper in `sampling_skeleton.py` with its signature — check there first before writing something from scratch.
+
 Suggested exam workflow:
 
 1. Write the signal formula and list every frequency in hertz.
@@ -2404,3 +2406,201 @@ plt.show()
 ```
 
 Both `4 Hz` and `11 Hz` lie below `fs/2 = 15 Hz`, so the strict sampling condition holds. Sinc aims at ideal band-limited interpolation; ZOH produces the expected staircase and high-frequency droop.
+
+## 15. Skeleton Helper Reference
+
+Every name `from sampling_skeleton import *` brings in, grouped the same way as the commented `__all__` at the top of `sampling_skeleton.py`. Each one validates its inputs and raises `ValueError` with a readable message rather than returning nonsense.
+
+### 15.1 Time axes, sample counts, array sizing
+
+| Call | Returns |
+|---|---|
+| `make_time_axis(start, stop, fs, endpoint=False)` | uniform sample times over `[start, stop)` |
+| `sample_signal(signal, fs, start, stop, endpoint=False)` | `(times, values)` from a vectorized callable |
+| `sample_count(duration, fs, endpoint=False)` | how many samples that duration holds |
+| `frequency_resolution(n, fs)` | `fs/n`, the DFT bin spacing in Hz |
+| `next_power_of_two(n)` | smallest `2**k >= n` |
+| `pad_to_power_of_two(values)` | zero-padded copy at that length |
+| `zero_pad(values, left=0, right=0, value=0.0)` | padded on either side |
+
+```python
+sample_count(1.0, 10.0)                  # 10
+sample_count(1.0, 10.0, endpoint=True)   # 11
+frequency_resolution(100, 100.0)         # 1.0 Hz -- a one-second record
+next_power_of_two(5)                     # 8
+pad_to_power_of_two([1.0, 2.0, 3.0])     # [1., 2., 3., 0.]
+```
+
+`sample_count` is defined to agree with `make_time_axis` exactly, so it never disagrees with the array you actually built.
+
+### 15.2 Building signals
+
+| Call | Returns |
+|---|---|
+| `sinusoid(t, frequency_hz, amplitude=1.0, phase=0.0)` | `A*cos(2*pi*f*t + phase)` |
+| `sum_of_tones(t, frequencies_hz, amplitudes=None, phases=None)` | several cosines added |
+| `unit_step(t, at=0.0, value_at_zero=1.0)` | `u(t - at)` |
+| `ramp(t, at=0.0, slope=1.0)` | `slope*(t - at)` for `t >= at`, else 0 |
+| `rectangular_pulse(t, start, stop, closed="left")` | unit-height rect |
+| `triangular_pulse(t, center=0.0, half_width=1.0)` | unit-height triangle |
+| `square_wave(t, frequency_hz, duty=0.5, amplitude=1.0)` | `+/-A` square wave |
+| `unit_impulse(length, index=0)` | discrete delta, one 1 among zeros |
+| `add_noise(values, snr_db, rng=None)` | Gaussian noise at a target SNR |
+
+```python
+t = np.linspace(0.0, 1.0, 1001)
+
+x = sum_of_tones(t, [5.0, 12.0], amplitudes=[1.0, 0.5])     # f_max = 12 Hz
+sine = sinusoid(t, 3.0, phase=-np.pi / 2)                   # phase -pi/2 = sine
+pulse = rectangular_pulse(t, 0.2, 0.4) + triangular_pulse(t, 0.7, 0.1)
+noisy = add_noise(x, snr_db=20.0, rng=np.random.default_rng(0))
+```
+
+Seed the generator whenever a grader has to reproduce your figure.
+
+`square_wave` is the standard counterexample to the theorem: its harmonics run to infinity, so `f_max` does not exist and no finite `fs` avoids aliasing. Say that rather than quoting a Nyquist rate for it.
+
+### 15.3 Rates, Nyquist, aliasing
+
+| Call | Returns |
+|---|---|
+| `nyquist_rate(max_frequency_hz)` | `2*f_max` |
+| `meets_nyquist(fs, max_frequency_hz, strict=True)` | one bool |
+| `alias_frequency(frequency_hz, fs)` | one folded frequency |
+| `alias_frequencies(frequencies_hz, fs)` | the fold, vectorized |
+| `is_aliased(frequencies_hz, fs, strict=True)` | one bool per tone |
+| `describe_sampling(fs, frequencies_hz, strict=True)` | a summary dict |
+| `decimate(values, factor)` | every `factor`-th sample |
+
+```python
+summary = describe_sampling(10.0, [1.0, 9.0])
+# {"fs": 10.0, "T": 0.1, "f_max": 9.0, "nyquist_rate": 18.0,
+#  "satisfies_nyquist": False, "aliased": [(9.0, 1.0)]}
+
+print(f"fs = {summary['fs']} Hz needs {summary['nyquist_rate']} Hz")
+for original, folded in summary["aliased"]:
+    print(f"  {original} Hz appears at {folded} Hz")
+```
+
+`describe_sampling` answers most "state your conclusion" parts in one object; loop over `summary["aliased"]` to report each spoiled tone. With `strict=True` the critical case `f == fs/2` is also flagged, matching the lecture's `fs > 2*f_max`.
+
+`decimate` has no anti-alias filter — it is `values[::factor]`. Low-pass first if the signal is not already band-limited for the reduced rate:
+
+```python
+safe = decimate(ideal_lowpass_filter(x, fs, cutoff_hz=fs / (2 * 4)), 4)
+```
+
+### 15.4 Spectra
+
+| Call | Returns |
+|---|---|
+| `magnitude_spectrum(values, fs, remove_mean=False)` | `(f, amplitude)`, one-sided |
+| `magnitude_spectrum_db(values, fs, floor_db=-120.0, remove_mean=False, reference=None)` | `(f, decibels)` |
+| `two_sided_spectrum(values, fs, shift=True, remove_mean=False)` | `(f, complex spectrum)` |
+| `dominant_frequencies(frequencies_hz, magnitude, count=1)` | the strongest bins, strongest first |
+| `spectrum_replicas(frequencies_hz, magnitude, fs, copies=2, points=2001)` | `(grid, stack, total)` |
+| `ideal_lowpass_filter(values, fs, cutoff_hz)` | the filtered signal |
+
+```python
+f, amplitude = magnitude_spectrum(x_samples, fs, remove_mean=True)
+peak_f, peak_mag = dominant_frequencies(f, amplitude, count=3)
+print(peak_f)            # the three tallest bins, tallest first
+
+f_db, decibels = magnitude_spectrum_db(x_samples, fs)   # tallest peak at 0 dB
+```
+
+`dominant_frequencies` sorts with `np.argsort` and reorders both arrays together. On a leaky spectrum the top few entries can all belong to one tone, so widen `count` and look at the frequencies before declaring three tones.
+
+`ideal_lowpass_filter` is the numerical stand-in for the lecture's reconstruction filter `H = T` in the band, 0 outside. It is a brick wall in frequency, so it rings in time — that is Gibbs, not a bug:
+
+```python
+recovered = ideal_lowpass_filter(mixed, fs, cutoff_hz=20.0)
+```
+
+### 15.5 Convolution
+
+| Call | Returns |
+|---|---|
+| `circular_convolve(a, b, n=None)` | periodic convolution, via the FFT |
+| `linear_convolve_via_fft(a, b)` | the same answer as `np.convolve(a, b)` |
+| `cross_correlate(a, b)` | `(lags, correlation)` |
+
+```python
+a = [1.0, 2.0, 3.0]
+b = [1.0, 1.0]
+
+np.convolve(a, b)                    # [1., 3., 5., 3.]   linear, length 4
+circular_convolve(a, b, n=3)         # [4., 3., 5.]       the tail wrapped round
+circular_convolve(a, b, n=4)         # [1., 3., 5., 3.]   enough room: no wrap
+linear_convolve_via_fft(a, b)        # [1., 3., 5., 3.]
+```
+
+This is the whole point in three lines: multiplying DFTs gives *circular* convolution, and it only equals the linear convolution once both inputs are padded to at least `len(a) + len(b) - 1`. `linear_convolve_via_fft` does that padding (up to the next power of two) and trims for you.
+
+`cross_correlate` does not flip the second sequence, so its peak lag measures a delay:
+
+```python
+lags, correlation = cross_correlate(received, pattern)
+delay_in_samples = lags[np.argmax(np.abs(correlation))]
+delay_in_seconds = delay_in_samples / fs
+```
+
+### 15.6 Reconstruction
+
+| Call | Returns |
+|---|---|
+| `sinc_reconstruct(sample_times, sample_values, output_times, sample_period=None)` | values at arbitrary output times |
+| `sinc_kernel(factor, half_width=10)` | truncated sinc on the fine grid |
+| `zero_order_hold(sample_times, sample_values, output_times, fill_value=np.nan)` | held values |
+| `zoh_kernel(factor)` | `factor` ones: the rect `h0` |
+| `upsample(values, factor)` | zero-stuffed sequence |
+| `interpolate_by_convolution(values, factor, kernel, delay=None)` | zero-stuff, convolve, re-align |
+| `zoh_frequency_response(frequencies_hz, sample_period)` | `T*exp(-j*pi*f*T)*sinc(f*T)` |
+| `zoh_compensation_gain(frequencies_hz, sample_period)` | `1/abs(sinc(f*T))` |
+| `reconstruction_error(reference, reconstructed)` | `{"max_abs", "rms", "snr_db"}` |
+
+Two routes to the same reconstruction: `sinc_reconstruct` and `zero_order_hold` take arbitrary `output_times`; `interpolate_by_convolution` takes a uniform refinement of the sample grid and shows reconstruction as filtering (sections 9 and 10).
+
+```python
+quality = reconstruction_error(signal(t_output), x_reconstructed)
+print(f"max error {quality['max_abs']:.4f}, SNR {quality['snr_db']:.1f} dB")
+
+interior = slice(200, -200)      # skip the truncated-sinc edges
+print(reconstruction_error(signal(t_output)[interior], x_reconstructed[interior]))
+```
+
+Finite sinc reconstruction is worst at the ends of the record, so quote an interior slice if the question asks how good it is away from the edges.
+
+```python
+T = 0.1
+f = np.linspace(0.0, 4.0, 5)
+droop = np.abs(zoh_frequency_response(f, T)) / T      # normalized to DC
+assert np.allclose(droop * zoh_compensation_gain(f, T), 1.0)
+```
+
+`zoh_compensation_gain` is the post-filter gain that flattens ZOH droop. It returns `np.inf` at every multiple of `fs`, where the ZOH response is exactly zero — nothing can be recovered there by any amount of gain.
+
+### 15.7 Plotting
+
+| Call | Draws |
+|---|---|
+| `plot_signal(t, values, ax=None, discrete=False, ...)` | one curve, or one stem plot |
+| `plot_sampling(reference_times, reference_values, sample_times, sample_values, ...)` | dense curve plus sample stems |
+| `plot_spectrum(frequencies_hz, magnitude, fs=None, discrete=False, ...)` | a spectrum, optionally marking `fs/2` and `fs` |
+| `plot_reconstruction(output_times, reconstructed, sample_times, sample_values, reference=None, ...)` | reconstruction, samples, optional original |
+| `plot_zoh(output_times, held_values, sample_times, sample_values, reference=None, ...)` | the staircase via `step(where="post")` |
+
+All five return `(fig, ax)` and none of them call `plt.show()`, so you can keep customizing:
+
+```python
+fig, ax = plot_reconstruction(
+    t_output, x_sinc, t_samples, x_samples, reference=signal(t_output)
+)
+ax.set_xlim(0.0, 1.0)
+plt.show()
+
+fig, ax = plot_zoh(t_output, x_zoh, t_samples, x_samples, reference=signal(t_output))
+plt.show()
+```
+
+`plot_zoh` uses `where="post"`, the `[nT, (n+1)T)` convention; `where="pre"` would shift the whole staircase back by one sample period.
