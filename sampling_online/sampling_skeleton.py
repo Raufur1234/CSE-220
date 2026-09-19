@@ -11,19 +11,26 @@ from numpy.typing import ArrayLike, NDArray
 
 __all__ = [
     "alias_frequency",
+    "interpolate_by_convolution",
     "magnitude_spectrum",
     "make_time_axis",
     "meets_nyquist",
     "nyquist_rate",
     "plot_sampling",
     "plot_signal",
+    "plot_spectrum",
     "rectangular_pulse",
     "sample_signal",
+    "sinc_kernel",
     "sinc_reconstruct",
+    "spectrum_replicas",
+    "two_sided_spectrum",
     "unit_step",
+    "upsample",
     "zero_order_hold",
     "zero_pad",
     "zoh_frequency_response",
+    "zoh_kernel",
 ]
 
 
@@ -327,4 +334,167 @@ def plot_sampling(
         label="samples",
     )
     ax.legend()
+    return figure, ax
+
+
+def two_sided_spectrum(
+    values: ArrayLike,
+    fs: float,
+    shift: bool = True,
+    remove_mean: bool = False,
+) -> tuple[NDArray[np.float64], NDArray[np.complex128]]:
+    """Return the full two-sided DFT and its frequency axis in hertz.
+
+    Uses ``np.fft.fft`` / ``np.fft.fftfreq``. With ``shift`` true the output is
+    reordered by ``np.fft.fftshift`` so frequencies run from ``-fs/2`` up to
+    just below ``+fs/2``, which is the ordering needed to draw the lecture's
+    spectrum-replication picture.
+    """
+    array = _as_1d_array(values)
+    if array.size == 0:
+        raise ValueError("values must not be empty")
+    if fs <= 0:
+        raise ValueError("fs must be positive")
+
+    working = array - np.mean(array) if remove_mean else array
+    spectrum = np.fft.fft(working)
+    frequencies = np.fft.fftfreq(array.size, d=1.0 / fs)
+    if shift:
+        spectrum = np.fft.fftshift(spectrum)
+        frequencies = np.fft.fftshift(frequencies)
+    return frequencies, spectrum
+
+
+def spectrum_replicas(
+    frequencies_hz: ArrayLike,
+    magnitude: ArrayLike,
+    fs: float,
+    copies: int = 2,
+    points: int = 2001,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Build the shifted-copy picture produced by impulse-train sampling.
+
+    ``frequencies_hz``/``magnitude`` describe one baseband spectrum. Each copy
+    ``k`` is that shape translated to ``k*fs`` and scaled by ``1/T = fs``, as in
+    ``Xp = (1/T) sum_k X(f - k*fs)``. Returns ``(grid, stack, total)`` where
+    ``stack`` has one row per copy and ``total`` is their sum; overlap in
+    ``total`` is exactly aliasing.
+    """
+    baseband_f = _as_1d_array(frequencies_hz, "frequencies_hz").astype(float)
+    baseband_mag = _as_1d_array(magnitude, "magnitude").astype(float)
+    if baseband_f.size != baseband_mag.size:
+        raise ValueError("frequencies_hz and magnitude must have equal length")
+    if fs <= 0:
+        raise ValueError("fs must be positive")
+    if copies < 0:
+        raise ValueError("copies must be nonnegative")
+
+    order = np.argsort(baseband_f)
+    baseband_f = baseband_f[order]
+    baseband_mag = baseband_mag[order]
+
+    span = (copies + 0.5) * fs
+    grid = np.linspace(-span, span, points)
+    offsets = np.arange(-copies, copies + 1, dtype=float) * fs
+    stack = fs * np.array(
+        [
+            np.interp(grid - offset, baseband_f, baseband_mag, left=0.0, right=0.0)
+            for offset in offsets
+        ]
+    )
+    return grid, stack, stack.sum(axis=0)
+
+
+def upsample(values: ArrayLike, factor: int) -> NDArray[Any]:
+    """Zero-stuff a sequence: keep ``x[n]``, insert ``factor-1`` zeros after it.
+
+    This is the array model of the impulse train ``xp(t) = sum x(nT) d(t - nT)``
+    placed on a grid ``factor`` times finer. Convolving the result with a
+    reconstruction kernel performs interpolation.
+    """
+    array = _as_1d_array(values)
+    if not isinstance(factor, (int, np.integer)) or factor < 1:
+        raise ValueError("factor must be a positive integer")
+    stuffed = np.zeros(array.size * int(factor), dtype=array.dtype)
+    stuffed[:: int(factor)] = array
+    return stuffed
+
+
+def zoh_kernel(factor: int) -> NDArray[np.float64]:
+    """Return the zero-order-hold kernel: ``factor`` ones, i.e. a unit rect."""
+    if not isinstance(factor, (int, np.integer)) or factor < 1:
+        raise ValueError("factor must be a positive integer")
+    return np.ones(int(factor), dtype=float)
+
+
+def sinc_kernel(factor: int, half_width: int = 10) -> NDArray[np.float64]:
+    """Return a truncated normalized sinc kernel for convolution interpolation.
+
+    The kernel spans ``half_width`` sample periods on each side and is sampled
+    on the upsampled grid, so its centre index (its delay) is
+    ``half_width * factor``.
+    """
+    if not isinstance(factor, (int, np.integer)) or factor < 1:
+        raise ValueError("factor must be a positive integer")
+    if not isinstance(half_width, (int, np.integer)) or half_width < 1:
+        raise ValueError("half_width must be a positive integer")
+    reach = int(half_width) * int(factor)
+    return np.sinc(np.arange(-reach, reach + 1) / float(factor))
+
+
+def interpolate_by_convolution(
+    values: ArrayLike,
+    factor: int,
+    kernel: ArrayLike,
+    delay: int | None = None,
+) -> NDArray[Any]:
+    """Reconstruct by zero-stuffing and convolving with a kernel.
+
+    Equivalent to ``np.convolve(upsample(values, factor), kernel)`` trimmed so
+    that output index ``n*factor`` lines up with input sample ``n``. ``delay``
+    is the kernel's centre index; it defaults to 0 for a causal kernel such as
+    the ZOH rect and should be ``half_width*factor`` for :func:`sinc_kernel`.
+    """
+    stuffed = upsample(values, factor)
+    taps = _as_1d_array(kernel, "kernel")
+    if taps.size == 0:
+        raise ValueError("kernel must not be empty")
+    if delay is None:
+        delay = 0
+    if not isinstance(delay, (int, np.integer)) or delay < 0:
+        raise ValueError("delay must be a nonnegative integer")
+
+    full = np.convolve(stuffed, taps)
+    return full[int(delay) : int(delay) + stuffed.size]
+
+
+def plot_spectrum(
+    frequencies_hz: ArrayLike,
+    magnitude: ArrayLike,
+    *,
+    ax: Axes | None = None,
+    discrete: bool = False,
+    label: str | None = None,
+    title: str | None = None,
+    fs: float | None = None,
+    **style: Any,
+) -> tuple[Figure, Axes]:
+    """Plot a magnitude spectrum, optionally marking ``fs/2`` and ``fs``."""
+    figure, ax = plot_signal(
+        frequencies_hz,
+        magnitude,
+        ax=ax,
+        discrete=discrete,
+        label=label,
+        title=title,
+        xlabel="Frequency (Hz)",
+        ylabel="Magnitude",
+        **style,
+    )
+    if fs is not None:
+        if fs <= 0:
+            raise ValueError("fs must be positive")
+        ax.axvline(fs / 2.0, color="C3", linestyle="--", label="fs/2")
+        ax.axvline(fs, color="C2", linestyle=":", label="fs")
+        ax.legend()
     return figure, ax

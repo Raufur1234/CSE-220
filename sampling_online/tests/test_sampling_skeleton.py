@@ -147,3 +147,58 @@ def test_plot_sampling_overlays_reference_and_sample_stems():
     assert fig is ax.figure
     assert len(ax.lines) >= 1
     assert len(ax.containers) >= 1
+
+
+def test_two_sided_spectrum_is_ascending_and_conjugate_symmetric():
+    fs = 100.0
+    t = np.arange(int(fs)) / fs
+    f, spectrum = ss.two_sided_spectrum(np.sin(2 * np.pi * 12 * t), fs)
+    assert np.all(np.diff(f) > 0)
+    peaks = np.abs(f[np.argsort(np.abs(spectrum))[-2:]])
+    np.testing.assert_allclose(np.sort(peaks), [12.0, 12.0])
+
+    f_raw, _ = ss.two_sided_spectrum(np.sin(2 * np.pi * 12 * t), fs, shift=False)
+    assert f_raw[0] == 0.0
+
+
+def test_upsample_zero_stuffs_between_samples():
+    np.testing.assert_allclose(ss.upsample([1.0, 2.0], 3), [1, 0, 0, 2, 0, 0])
+
+
+def test_zoh_kernel_convolution_matches_zero_order_hold():
+    factor = 8
+    samples = np.array([1.0, -2.0, 0.5, 3.0])
+    held = ss.interpolate_by_convolution(samples, factor, ss.zoh_kernel(factor))
+    np.testing.assert_allclose(held, np.repeat(samples, factor))
+
+
+def test_sinc_kernel_convolution_is_exact_at_sample_instants():
+    factor = 8
+    samples = np.array([1.0, -2.0, 0.5, 3.0])
+    kernel = ss.sinc_kernel(factor, half_width=12)
+    dense = ss.interpolate_by_convolution(
+        samples, factor, kernel, delay=12 * factor
+    )
+    np.testing.assert_allclose(dense[::factor], samples, atol=1e-9)
+
+
+def test_spectrum_replicas_scales_by_fs_and_overlaps_when_undersampled():
+    baseband_f = np.linspace(-4.0, 4.0, 401)
+    baseband_mag = np.clip(1.0 - np.abs(baseband_f) / 4.0, 0.0, None)
+
+    grid, stack, total = ss.spectrum_replicas(baseband_f, baseband_mag, fs=20.0)
+    assert stack.shape == (5, grid.size)
+    np.testing.assert_allclose(total, stack.sum(axis=0))
+    np.testing.assert_allclose(total[np.argmin(np.abs(grid))], 20.0)
+
+    grid, stack, total = ss.spectrum_replicas(
+        baseband_f, baseband_mag, fs=5.0, copies=1
+    )
+    overlap = int(np.argmin(np.abs(grid - 2.5)))
+    assert total[overlap] > stack[:, overlap].max()
+
+
+def test_plot_spectrum_marks_nyquist_and_sampling_frequency():
+    frequencies = np.linspace(0.0, 50.0, 101)
+    _, ax = ss.plot_spectrum(frequencies, np.ones_like(frequencies), fs=40.0)
+    assert len(ax.lines) >= 3
